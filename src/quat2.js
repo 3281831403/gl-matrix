@@ -539,6 +539,12 @@ export function rotateAroundAxis(out, a, axis, rad) {
   }
   let axisLength = Math.sqrt(axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]);
 
+  // A zero-length or non-finite axis, or a non-finite angle, defines no
+  // rotation: leave `a` unchanged instead of producing NaN/Infinity.
+  if (!isFinite(axisLength) || !(axisLength > glMatrix.EPSILON) || !isFinite(rad)) {
+    return copy(out, a);
+  }
+
   rad = rad * 0.5;
   let s = Math.sin(rad);
   let bx = (s * axis[0]) / axisLength;

@@ -1168,32 +1168,25 @@ export function getScaling(out, mat) {
 }
 
 /**
- * Returns a quaternion representing the rotational component
- *  of a transformation matrix. If a matrix is built with
- *  fromRotationTranslation, the returned quaternion will be the
- *  same as the quaternion originally supplied.
- * @param {quat} out Quaternion to receive the rotation component
- * @param {ReadonlyMat4} mat Matrix to be decomposed (input)
- * @return {quat} out
+ * Builds a normalized quaternion from the (already scale-normalized)
+ * upper-left 3x3 entries of a matrix, using the same branch selection as
+ * the previous getRotation/decompose implementation. The result is always
+ * a finite unit quaternion: when the entries cannot produce a valid
+ * rotation the identity quaternion is returned instead of NaN.
+ * @private
  */
-export function getRotation(out, mat) {
-  let scaling = new glMatrix.ARRAY_TYPE(3);
-  getScaling(scaling, mat);
-
-  let is1 = 1 / scaling[0];
-  let is2 = 1 / scaling[1];
-  let is3 = 1 / scaling[2];
-
-  let sm11 = mat[0] * is1;
-  let sm12 = mat[1] * is1;
-  let sm13 = mat[2] * is1;
-  let sm21 = mat[4] * is2;
-  let sm22 = mat[5] * is2;
-  let sm23 = mat[6] * is2;
-  let sm31 = mat[8] * is3;
-  let sm32 = mat[9] * is3;
-  let sm33 = mat[10] * is3;
-
+function rotationFromNormalizedMatrix(
+  out,
+  sm11,
+  sm12,
+  sm13,
+  sm21,
+  sm22,
+  sm23,
+  sm31,
+  sm32,
+  sm33
+) {
   let trace = sm11 + sm22 + sm33;
   let S = 0;
 
@@ -1223,12 +1216,107 @@ export function getRotation(out, mat) {
     out[2] = 0.25 * S;
   }
 
+  let x = out[0],
+    y = out[1],
+    z = out[2],
+    w = out[3];
+  let len = Math.sqrt(x * x + y * y + z * z + w * w);
+  if (isFinite(len) && len > glMatrix.EPSILON) {
+    let invLen = 1 / len;
+    out[0] = x * invLen;
+    out[1] = y * invLen;
+    out[2] = z * invLen;
+    out[3] = w * invLen;
+  } else {
+    out[0] = 0;
+    out[1] = 0;
+    out[2] = 0;
+    out[3] = 1;
+  }
+
   return out;
 }
 
 /**
+ * Returns a quaternion representing the rotational component
+ *  of a transformation matrix. If a matrix is built with
+ *  fromRotationTranslation, the returned quaternion will be the
+ *  same as the quaternion originally supplied.
+ *
+ * The returned quaternion is always normalized. A matrix whose rotation
+ *  cannot be extracted (a zero scale column, or non-finite entries) yields
+ *  the identity quaternion instead of NaN. A reflection (negative
+ *  determinant, e.g. a negative scale axis) is folded into the first
+ *  column so the extracted rotation stays a proper rotation.
+ * @param {quat} out Quaternion to receive the rotation component
+ * @param {ReadonlyMat4} mat Matrix to be decomposed (input)
+ * @return {quat} out
+ */
+export function getRotation(out, mat) {
+  let scaling = new glMatrix.ARRAY_TYPE(3);
+  getScaling(scaling, mat);
+
+  if (
+    !isFinite(scaling[0]) ||
+    !isFinite(scaling[1]) ||
+    !isFinite(scaling[2]) ||
+    !(scaling[0] > 0) ||
+    !(scaling[1] > 0) ||
+    !(scaling[2] > 0)
+  ) {
+    // Degenerate matrix: no rotation can be recovered.
+    out[0] = 0;
+    out[1] = 0;
+    out[2] = 0;
+    out[3] = 1;
+    return out;
+  }
+
+  // A negative determinant means the scale contains a reflection, which a
+  // quaternion cannot represent. Fold the sign into the first column so the
+  // normalized matrix is a proper rotation; for the common single-negative-
+  // axis TRS case this recovers the original rotation.
+  let sign = 1;
+  let m00 = mat[0],
+    m01 = mat[1],
+    m02 = mat[2];
+  let m10 = mat[4],
+    m11 = mat[5],
+    m12 = mat[6];
+  let m20 = mat[8],
+    m21 = mat[9],
+    m22 = mat[10];
+  let det =
+    m00 * (m11 * m22 - m12 * m21) -
+    m01 * (m10 * m22 - m12 * m20) +
+    m02 * (m10 * m21 - m11 * m20);
+  if (det < 0) {
+    sign = -1;
+  }
+
+  return rotationFromNormalizedMatrix(
+    out,
+    (mat[0] * sign) / scaling[0],
+    (mat[1] * sign) / scaling[0],
+    (mat[2] * sign) / scaling[0],
+    mat[4] / scaling[1],
+    mat[5] / scaling[1],
+    mat[6] / scaling[1],
+    mat[8] / scaling[2],
+    mat[9] / scaling[2],
+    mat[10] / scaling[2]
+  );
+}
+
+/**
  * Decomposes a transformation matrix into its rotation, translation
- * and scale components. Returns only the rotation component
+ * and scale components. Returns only the rotation component.
+ *
+ * The returned rotation is always a finite unit quaternion: a degenerate
+ * matrix (zero scale column, or non-finite entries) yields the identity
+ * rotation, while the translation and the scale that can still be read
+ * are kept. A reflection is folded into the first column, as in
+ * getRotation, so the rotation stays proper.
  * @param  {quat} out_r Quaternion to receive the rotation component
  * @param  {vec3} out_t Vector to receive the translation vector
  * @param  {vec3} out_s Vector to receive the scaling factor
@@ -1254,50 +1342,45 @@ export function decompose(out_r, out_t, out_s, mat) {
   out_s[1] = Math.sqrt(m21 * m21 + m22 * m22 + m23 * m23);
   out_s[2] = Math.sqrt(m31 * m31 + m32 * m32 + m33 * m33);
 
-  let is1 = 1 / out_s[0];
-  let is2 = 1 / out_s[1];
-  let is3 = 1 / out_s[2];
-
-  let sm11 = m11 * is1;
-  let sm12 = m12 * is1;
-  let sm13 = m13 * is1;
-  let sm21 = m21 * is2;
-  let sm22 = m22 * is2;
-  let sm23 = m23 * is2;
-  let sm31 = m31 * is3;
-  let sm32 = m32 * is3;
-  let sm33 = m33 * is3;
-
-  let trace = sm11 + sm22 + sm33;
-  let S = 0;
-
-  if (trace > 0) {
-    S = Math.sqrt(trace + 1.0) * 2;
-    out_r[3] = 0.25 * S;
-    out_r[0] = (sm23 - sm32) / S;
-    out_r[1] = (sm31 - sm13) / S;
-    out_r[2] = (sm12 - sm21) / S;
-  } else if (sm11 > sm22 && sm11 > sm33) {
-    S = Math.sqrt(1.0 + sm11 - sm22 - sm33) * 2;
-    out_r[3] = (sm23 - sm32) / S;
-    out_r[0] = 0.25 * S;
-    out_r[1] = (sm12 + sm21) / S;
-    out_r[2] = (sm31 + sm13) / S;
-  } else if (sm22 > sm33) {
-    S = Math.sqrt(1.0 + sm22 - sm11 - sm33) * 2;
-    out_r[3] = (sm31 - sm13) / S;
-    out_r[0] = (sm12 + sm21) / S;
-    out_r[1] = 0.25 * S;
-    out_r[2] = (sm23 + sm32) / S;
-  } else {
-    S = Math.sqrt(1.0 + sm33 - sm11 - sm22) * 2;
-    out_r[3] = (sm12 - sm21) / S;
-    out_r[0] = (sm31 + sm13) / S;
-    out_r[1] = (sm23 + sm32) / S;
-    out_r[2] = 0.25 * S;
+  if (
+    !isFinite(out_s[0]) ||
+    !isFinite(out_s[1]) ||
+    !isFinite(out_s[2]) ||
+    !(out_s[0] > 0) ||
+    !(out_s[1] > 0) ||
+    !(out_s[2] > 0)
+  ) {
+    // Degenerate matrix: no rotation can be recovered.
+    out_r[0] = 0;
+    out_r[1] = 0;
+    out_r[2] = 0;
+    out_r[3] = 1;
+    return out_r;
   }
 
-  return out_r;
+  // Fold a reflection into the first column (see getRotation).
+  let sign = 1;
+  if (
+    m11 * (m22 * m33 - m23 * m32) -
+      m12 * (m21 * m33 - m23 * m31) +
+      m13 * (m21 * m32 - m22 * m31) <
+    0
+  ) {
+    sign = -1;
+  }
+
+  return rotationFromNormalizedMatrix(
+    out_r,
+    (m11 * sign) / out_s[0],
+    (m12 * sign) / out_s[0],
+    (m13 * sign) / out_s[0],
+    m21 / out_s[1],
+    m22 / out_s[1],
+    m23 / out_s[1],
+    m31 / out_s[2],
+    m32 / out_s[2],
+    m33 / out_s[2]
+  );
 }
 
 /**

@@ -40,7 +40,10 @@ export function identity(out) {
 
 /**
  * Sets a quat from the given angle and rotation axis,
- * then returns it.
+ * then returns it. The axis does not need to be unit length: it is
+ * normalized internally, so the resulting quaternion is always unit.
+ * A zero-length or non-finite axis, and a non-finite angle, define no
+ * rotation, so the identity quaternion is returned instead.
  *
  * @param {quat} out the receiving quaternion
  * @param {ReadonlyVec3} axis the axis around which to rotate
@@ -48,11 +51,29 @@ export function identity(out) {
  * @returns {quat} out
  **/
 export function setAxisAngle(out, axis, rad) {
+  if (!isFinite(rad)) {
+    return identity(out);
+  }
+
+  let x = axis[0],
+    y = axis[1],
+    z = axis[2];
+  let len = Math.sqrt(x * x + y * y + z * z);
+
+  if (!isFinite(len) || !(len > glMatrix.EPSILON)) {
+    return identity(out);
+  }
+
+  len = 1 / len;
+  x *= len;
+  y *= len;
+  z *= len;
+
   rad = rad * 0.5;
   let s = Math.sin(rad);
-  out[0] = s * axis[0];
-  out[1] = s * axis[1];
-  out[2] = s * axis[2];
+  out[0] = s * x;
+  out[1] = s * y;
+  out[2] = s * z;
   out[3] = Math.cos(rad);
   return out;
 }
@@ -443,6 +464,21 @@ export function fromMat3(out, m) {
     out[k] = (m[k * 3 + i] + m[i * 3 + k]) * fRoot;
   }
 
+  // Non-finite input cannot define a rotation. Return the identity
+  // quaternion rather than propagating NaN. Note this does not otherwise
+  // normalize the result, as documented above.
+  if (
+    !isFinite(out[0]) ||
+    !isFinite(out[1]) ||
+    !isFinite(out[2]) ||
+    !isFinite(out[3])
+  ) {
+    out[0] = 0;
+    out[1] = 0;
+    out[2] = 0;
+    out[3] = 1;
+  }
+
   return out;
 }
 
@@ -776,6 +812,15 @@ export const setAxes = (function () {
     matr[5] = -view[1];
     matr[8] = -view[2];
 
-    return normalize(out, fromMat3(out, matr));
+    fromMat3(out, matr);
+    normalize(out, out);
+
+    // Degenerate or non-finite axes do not define a rotation.
+    let len = out[0] * out[0] + out[1] * out[1] + out[2] * out[2] + out[3] * out[3];
+    if (!isFinite(len) || !(len > glMatrix.EPSILON)) {
+      identity(out);
+    }
+
+    return out;
   };
 })();
